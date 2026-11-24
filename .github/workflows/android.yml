@@ -28,13 +28,24 @@ jobs:
       - name: Configurar Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Aceptar licencias e instalar SDK Android 35
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
       - name: Configurar Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
+      - name: Verificar herramientas
+        run: |
+          java -version
+          gradle --version
+          sdkmanager --list_installed
+
       - name: Compilar APK Debug
-        run: gradle assembleDebug
+        run: gradle assembleDebug --stacktrace
 
       - name: Publicar APK como artefacto
         uses: actions/upload-artifact@v4
