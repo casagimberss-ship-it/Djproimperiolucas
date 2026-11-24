@@ -25,44 +25,40 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configurar Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
-
-      - name: Configurar Gradle 8.9 y caché
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
-          cache-cleanup: on-success
+          # No usar cache: gradle aquí: el proyecto está dentro de un ZIP.
 
       - name: Comprobar y descomprimir proyecto
         shell: bash
         run: |
           set -euo pipefail
           ZIP_FILE="IMPERIO_DJ_PRO_MIX_GITHUB.zip"
-
           if [[ ! -f "$ZIP_FILE" ]]; then
             echo "::error::No se encontró $ZIP_FILE en la raíz del repositorio."
             ls -la
             exit 1
           fi
-
           unzip -t "$ZIP_FILE"
           mkdir -p proyecto
           unzip -oq "$ZIP_FILE" -d proyecto
-
           SETTINGS_FILE="$(find proyecto -type f \( -name settings.gradle.kts -o -name settings.gradle \) -print -quit)"
           if [[ -z "$SETTINGS_FILE" ]]; then
             echo "::error::No se encontró settings.gradle(.kts) dentro del ZIP."
-            find proyecto -maxdepth 4 -type f | head -100
+            find proyecto -maxdepth 5 -type f | head -100
             exit 1
           fi
-
           PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
           echo "Proyecto Android encontrado en: $PROJECT_DIR"
+
+      - name: Configurar Gradle 8.9 y caché
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+          cache-cleanup: on-success
 
       - name: Configurar Android SDK
         shell: bash
@@ -86,9 +82,7 @@ jobs:
           cd "$PROJECT_DIR"
           test -f settings.gradle.kts -o -f settings.gradle
           test -f app/build.gradle.kts -o -f app/build.gradle
-          echo "Estructura del proyecto:"
           ls -la
-          echo "Módulo app:"
           ls -la app
 
       - name: Compilar APK con reintentos ante errores temporales de Maven
@@ -96,22 +90,18 @@ jobs:
         run: |
           set -uo pipefail
           cd "$PROJECT_DIR"
-
           MAX_ATTEMPTS=4
           for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
             LOG_FILE="$RUNNER_TEMP/gradle-build-attempt-$attempt.log"
             echo "Compilación: intento $attempt/$MAX_ATTEMPTS"
-
             set +e
             gradle assembleDebug --stacktrace --no-daemon --max-workers=2 2>&1 | tee "$LOG_FILE"
             BUILD_STATUS=${PIPESTATUS[0]}
             set -e
-
             if [[ "$BUILD_STATUS" -eq 0 ]]; then
               echo "APK generada correctamente."
               exit 0
             fi
-
             if grep -Eqi 'status code 429|Too Many Requests|status code 5[0-9][0-9]|timed out|Read timed out|Connection reset|Temporary failure in name resolution' "$LOG_FILE"; then
               if [[ "$attempt" -lt "$MAX_ATTEMPTS" ]]; then
                 WAIT_SECONDS=$((attempt * 30))
@@ -120,12 +110,10 @@ jobs:
                 continue
               fi
             else
-              echo "::error::La compilación falló por un error que no parece ser temporal. Revisar el primer error Gradle/Kotlin del registro."
+              echo "::error::Fallo no identificado como temporal. Revisar el primer error Gradle/Kotlin."
             fi
-
             exit "$BUILD_STATUS"
           done
-
           echo "::error::Se agotaron los reintentos de compilación."
           exit 1
 
