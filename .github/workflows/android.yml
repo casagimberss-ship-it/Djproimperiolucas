@@ -1,3 +1,4 @@
+
 name: Compilar IMPERIO DJ PRO MIX
 
 on:
@@ -25,51 +26,44 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Configurar Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
       - name: Configurar Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Aceptar licencias e instalar SDK
         run: |
-          yes | sdkmanager --licenses
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
 
-      - name: Localizar proyecto Android
-        shell: bash
+      - name: Aceptar licencias Android
         run: |
-          set -e
-          SETTINGS_FILE="$(find . -type f \\( -name settings.gradle -o -name settings.gradle.kts \\) -not -path './.git/*' -print -quit)"
+          yes | sdkmanager --licenses || true
 
-          if [ -z "$SETTINGS_FILE" ]; then
-            ZIP_FILE="$(find . -maxdepth 3 -type f -iname 'IMPERIO_DJ_PRO_MIX_GITHUB.zip' -print -quit)"
-            if [ -n "$ZIP_FILE" ]; then
-              mkdir -p extracted-project
-              unzip -q "$ZIP_FILE" -d extracted-project
-              SETTINGS_FILE="$(find extracted-project -type f \\( -name settings.gradle -o -name settings.gradle.kts \\) -print -quit)"
-            fi
-          fi
+      - name: Instalar componentes Android
+        run: |
+          sdkmanager --install "platform-tools"
+          sdkmanager --install "platforms;android-35"
+          sdkmanager --install "build-tools;35.0.0"
 
-          if [ -z "$SETTINGS_FILE" ]; then
-            echo "::error::No se encontró settings.gradle ni settings.gradle.kts. Sube y descomprime los archivos fuente del proyecto Android en el repositorio."
-            echo "Contenido de la raíz del repositorio:"
-            ls -la
+      - name: Verificar proyecto Android
+        run: |
+          echo "Contenido del repositorio:"
+          ls -la
+          if [ ! -f settings.gradle.kts ] && [ ! -f settings.gradle ]; then
+            echo "ERROR: No se encuentra settings.gradle"
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
-          PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Proyecto Android encontrado en: $PROJECT_DIR"
-
       - name: Compilar APK Debug
-        run: |
-          cd "$PROJECT_DIR"
-          gradle --no-daemon assembleDebug --stacktrace
+        run: gradle assembleDebug --stacktrace
 
-      - name: Publicar APK como artefacto
+      - name: Publicar APK
         uses: actions/upload-artifact@v4
         with:
           name: IMPERIO-DJ-PRO-MIX-APK
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
           
