@@ -1,5 +1,4 @@
-
-name: Compilar IMPERIO DJ PRO MIX
+name: Compilar MODO FIESTA
 
 on:
   workflow_dispatch:
@@ -11,10 +10,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Generar APK Android
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: Descargar código
@@ -25,61 +29,123 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
-      - name: Configurar Gradle
+      - name: Configurar Gradle 8.9 y caché
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+          cache-cleanup: on-success
 
-      - name: Descomprimir proyecto
+      - name: Comprobar y descomprimir proyecto
+        shell: bash
         run: |
-          unzip -o IMPERIO_DJ_PRO_MIX_GITHUB.zip -d proyecto
+          set -euo pipefail
+          ZIP_FILE="IMPERIO_DJ_PRO_MIX_GITHUB.zip"
 
-          echo "Buscando archivos Gradle..."
-          find proyecto -name settings.gradle.kts -o -name settings.gradle
-
-          PROJECT_DIR=$(dirname "$(find proyecto -name settings.gradle.kts -o -name settings.gradle | head -n 1)")
-
-          if [ -z "$PROJECT_DIR" ] || [ "$PROJECT_DIR" = "proyecto" ]; then
-            echo "ERROR: No se encontró el proyecto Android"
+          if [[ ! -f "$ZIP_FILE" ]]; then
+            echo "::error::No se encontró $ZIP_FILE en la raíz del repositorio."
+            ls -la
             exit 1
           fi
 
-          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
-          echo "Proyecto encontrado en: $PROJECT_DIR"
+          unzip -t "$ZIP_FILE"
+          mkdir -p proyecto
+          unzip -oq "$ZIP_FILE" -d proyecto
+
+          SETTINGS_FILE="$(find proyecto -type f \( -name settings.gradle.kts -o -name settings.gradle \) -print -quit)"
+          if [[ -z "$SETTINGS_FILE" ]]; then
+            echo "::error::No se encontró settings.gradle(.kts) dentro del ZIP."
+            find proyecto -maxdepth 4 -type f | head -100
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Proyecto Android encontrado en: $PROJECT_DIR"
 
       - name: Configurar Android SDK
+        shell: bash
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+          set -euo pipefail
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
 
-      - name: Aceptar licencias
+      - name: Aceptar licencias e instalar SDK 35
+        shell: bash
         run: |
-          yes | sdkmanager --licenses || true
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Instalar Android SDK 35
+      - name: Verificar estructura Android
+        shell: bash
         run: |
-          sdkmanager --install "platform-tools"
-          sdkmanager --install "platforms;android-35"
-          sdkmanager --install "build-tools;35.0.0"
-
-      - name: Verificar proyecto
-        run: |
+          set -euo pipefail
           cd "$PROJECT_DIR"
+          test -f settings.gradle.kts -o -f settings.gradle
+          test -f app/build.gradle.kts -o -f app/build.gradle
+          echo "Estructura del proyecto:"
           ls -la
-          test -f settings.gradle.kts || test -f settings.gradle
+          echo "Módulo app:"
+          ls -la app
 
-      - name: Compilar APK
+      - name: Compilar APK con reintentos ante errores temporales de Maven
+        shell: bash
         run: |
+          set -uo pipefail
           cd "$PROJECT_DIR"
-          gradle assembleDebug --stacktrace
+
+          MAX_ATTEMPTS=4
+          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+            LOG_FILE="$RUNNER_TEMP/gradle-build-attempt-$attempt.log"
+            echo "Compilación: intento $attempt/$MAX_ATTEMPTS"
+
+            set +e
+            gradle assembleDebug --stacktrace --no-daemon --max-workers=2 2>&1 | tee "$LOG_FILE"
+            BUILD_STATUS=${PIPESTATUS[0]}
+            set -e
+
+            if [[ "$BUILD_STATUS" -eq 0 ]]; then
+              echo "APK generada correctamente."
+              exit 0
+            fi
+
+            if grep -Eqi 'status code 429|Too Many Requests|status code 5[0-9][0-9]|timed out|Read timed out|Connection reset|Temporary failure in name resolution' "$LOG_FILE"; then
+              if [[ "$attempt" -lt "$MAX_ATTEMPTS" ]]; then
+                WAIT_SECONDS=$((attempt * 30))
+                echo "::warning::Fallo temporal de red/repositorio. Nuevo intento en ${WAIT_SECONDS}s."
+                sleep "$WAIT_SECONDS"
+                continue
+              fi
+            else
+              echo "::error::La compilación falló por un error que no parece ser temporal. Revisar el primer error Gradle/Kotlin del registro."
+            fi
+
+            exit "$BUILD_STATUS"
+          done
+
+          echo "::error::Se agotaron los reintentos de compilación."
+          exit 1
+
+      - name: Verificar APK generada
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find "$PROJECT_DIR" -type f -path '*/build/outputs/apk/debug/*.apk' -print -quit)"
+          if [[ -z "$APK" ]]; then
+            echo "::error::Gradle terminó sin producir una APK debug."
+            exit 1
+          fi
+          echo "APK generada: $APK"
+          ls -lh "$APK"
 
       - name: Publicar APK
         uses: actions/upload-artifact@v4
         with:
-          name: IMPERIO-DJ-PRO-MIX-APK
-          path: proyecto/**/app/build/outputs/apk/debug/*.apk
+          name: MODO-FIESTA-APK
+          path: proyecto/**/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
           
