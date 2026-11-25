@@ -18,13 +18,12 @@ jobs:
   build:
     name: Build Android APK
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Supports both an extracted project and a ZIP uploaded to the repository.
       - name: Locate or extract Android project
         id: project
         shell: bash
@@ -36,41 +35,36 @@ jobs:
           }
 
           PROJECT_DIR=""
-
-          if is_android_project "."; then
+          if is_android_project "$GITHUB_WORKSPACE"; then
             PROJECT_DIR="$GITHUB_WORKSPACE"
-          elif is_android_project "intelligent_dj"; then
+          elif is_android_project "$GITHUB_WORKSPACE/intelligent_dj"; then
             PROJECT_DIR="$GITHUB_WORKSPACE/intelligent_dj"
           else
-            ZIP_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 2 -type f -iname '*.zip' -print -quit || true)"
+            ZIP_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 3 -type f -iname '*.zip' -print -quit || true)"
             if [[ -z "$ZIP_FILE" ]]; then
-              echo "ERROR: No se encontró el proyecto ni un archivo ZIP en la raíz del repositorio."
-              echo "Subí el ZIP del proyecto o extraé su contenido conservando la carpeta intelligent_dj/."
+              echo "ERROR: No se encontró el proyecto Android ni un ZIP en el repositorio."
               find "$GITHUB_WORKSPACE" -maxdepth 4 -type f -print
               exit 1
             fi
 
-            echo "Archivo ZIP encontrado: $ZIP_FILE"
             EXTRACT_DIR="$RUNNER_TEMP/intelligent-dj-source"
             mkdir -p "$EXTRACT_DIR"
             unzip -oq "$ZIP_FILE" -d "$EXTRACT_DIR"
-
             SETTINGS_FILE="$(find "$EXTRACT_DIR" -type f -name 'settings.gradle.kts' -print -quit || true)"
             if [[ -z "$SETTINGS_FILE" ]]; then
               echo "ERROR: El ZIP no contiene settings.gradle.kts."
               find "$EXTRACT_DIR" -maxdepth 5 -type f -print
               exit 1
             fi
-
             PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
           fi
 
           if [[ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]]; then
-            echo "ERROR: Se encontró settings.gradle.kts, pero falta app/build.gradle.kts en $PROJECT_DIR."
+            echo "ERROR: Falta app/build.gradle.kts en $PROJECT_DIR"
             exit 1
           fi
 
-          echo "Proyecto Android: $PROJECT_DIR"
+          echo "Proyecto Android encontrado en: $PROJECT_DIR"
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Set up Java 17
@@ -79,14 +73,36 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK and native build tools
+      # GitHub-hosted Ubuntu runners already provide Android command-line tools.
+      # Do not use setup-android@v3 here: it attempts to install the obsolete
+      # SDK package named "tools", which now fails with "Failed to find package".
+      - name: Configure Android SDK command-line tools
         shell: bash
         run: |
+          set -euo pipefail
+          if [[ -z "${ANDROID_HOME:-}" ]]; then
+            export ANDROID_HOME="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          fi
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print 2>/dev/null | sort -V | tail -n 1)"
+          if [[ -z "$SDKMANAGER" ]]; then
+            echo "ERROR: No se encontró sdkmanager dentro de $ANDROID_HOME/cmdline-tools"
+            exit 1
+          fi
+
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "Usando sdkmanager: $SDKMANAGER"
+
+      - name: Accept licenses and install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
           yes | sdkmanager --licenses >/dev/null
-          sdkmanager \
+          sdkmanager --install \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0" \
@@ -102,6 +118,7 @@ jobs:
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
+          set -euo pipefail
           test -f settings.gradle.kts
           test -f build.gradle.kts
           test -f app/build.gradle.kts
