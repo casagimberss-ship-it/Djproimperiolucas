@@ -1,4 +1,4 @@
-name: INTELLIGENT DJ - Android APK
+name: Build Android APK
 
 on:
   push:
@@ -24,20 +24,54 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Detect Android project directory
+      # Supports both an extracted project and a ZIP uploaded to the repository.
+      - name: Locate or extract Android project
         id: project
         shell: bash
         run: |
-          if [[ -f "settings.gradle.kts" && -f "app/build.gradle.kts" ]]; then
-            echo "dir=." >> "$GITHUB_OUTPUT"
-          elif [[ -f "intelligent_dj/settings.gradle.kts" && -f "intelligent_dj/app/build.gradle.kts" ]]; then
-            echo "dir=intelligent_dj" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+
+          is_android_project() {
+            [[ -f "$1/settings.gradle.kts" && -f "$1/app/build.gradle.kts" ]]
+          }
+
+          PROJECT_DIR=""
+
+          if is_android_project "."; then
+            PROJECT_DIR="$GITHUB_WORKSPACE"
+          elif is_android_project "intelligent_dj"; then
+            PROJECT_DIR="$GITHUB_WORKSPACE/intelligent_dj"
           else
-            echo "ERROR: No se encontró el proyecto Android."
-            echo "Se esperaba settings.gradle.kts y app/build.gradle.kts en la raíz o en intelligent_dj/."
-            find . -maxdepth 3 -type f \( -name 'settings.gradle' -o -name 'settings.gradle.kts' -o -name 'build.gradle' -o -name 'build.gradle.kts' \) -print
+            ZIP_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 2 -type f -iname '*.zip' -print -quit || true)"
+            if [[ -z "$ZIP_FILE" ]]; then
+              echo "ERROR: No se encontró el proyecto ni un archivo ZIP en la raíz del repositorio."
+              echo "Subí el ZIP del proyecto o extraé su contenido conservando la carpeta intelligent_dj/."
+              find "$GITHUB_WORKSPACE" -maxdepth 4 -type f -print
+              exit 1
+            fi
+
+            echo "Archivo ZIP encontrado: $ZIP_FILE"
+            EXTRACT_DIR="$RUNNER_TEMP/intelligent-dj-source"
+            mkdir -p "$EXTRACT_DIR"
+            unzip -oq "$ZIP_FILE" -d "$EXTRACT_DIR"
+
+            SETTINGS_FILE="$(find "$EXTRACT_DIR" -type f -name 'settings.gradle.kts' -print -quit || true)"
+            if [[ -z "$SETTINGS_FILE" ]]; then
+              echo "ERROR: El ZIP no contiene settings.gradle.kts."
+              find "$EXTRACT_DIR" -maxdepth 5 -type f -print
+              exit 1
+            fi
+
+            PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          fi
+
+          if [[ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]]; then
+            echo "ERROR: Se encontró settings.gradle.kts, pero falta app/build.gradle.kts en $PROJECT_DIR."
             exit 1
           fi
+
+          echo "Proyecto Android: $PROJECT_DIR"
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
@@ -48,10 +82,10 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK and NDK packages
+      - name: Install Android SDK and native build tools
         shell: bash
         run: |
-          yes | sdkmanager --licenses
+          yes | sdkmanager --licenses >/dev/null
           sdkmanager \
             "platform-tools" \
             "platforms;android-35" \
@@ -64,14 +98,16 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Verify project files
+      - name: Verify Android project files
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
           test -f settings.gradle.kts
           test -f build.gradle.kts
           test -f app/build.gradle.kts
+          test -f app/src/main/AndroidManifest.xml
           test -f app/src/main/cpp/CMakeLists.txt
+          echo "Estructura Android verificada."
 
       - name: Build debug APK
         working-directory: ${{ steps.project.outputs.dir }}
